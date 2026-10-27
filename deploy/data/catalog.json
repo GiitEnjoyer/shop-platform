@@ -1,0 +1,12 @@
+[
+  {"id": "p-1001", "name": "Ноутбук 14\"", "category": "electronics", "price_rub": 89990, "stock": 12},
+  {"id": "p-1002", "name": "Беспроводная мышь", "category": "electronics", "price_rub": 1990, "stock": 340},
+  {"id": "p-1003", "name": "Механическая клавиатура", "category": "electronics", "price_rub": 7490, "stock": 85},
+  {"id": "p-1004", "name": "Монитор 27\"", "category": "electronics", "price_rub": 32990, "stock": 20},
+  {"id": "p-2001", "name": "Кружка керамическая", "category": "home", "price_rub": 590, "stock": 1200},
+  {"id": "p-2002", "name": "Настольная лампа", "category": "home", "price_rub": 2490, "stock": 64},
+  {"id": "p-2003", "name": "Плед", "category": "home", "price_rub": 3290, "stock": 150},
+  {"id": "p-3001", "name": "Рюкзак городской", "category": "accessories", "price_rub": 4590, "stock": 77},
+  {"id": "p-3002", "name": "Термобутылка", "category": "accessories", "price_rub": 1490, "stock": 410},
+  {"id": "p-3003", "name": "Зонт", "category": "accessories", "price_rub": 1890, "stock": 0}
+]
