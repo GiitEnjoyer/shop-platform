@@ -1,0 +1,107 @@
+{
+  "title": "Shop / Service SLO and canary",
+  "uid": "shop-service-slo",
+  "tags": ["shop", "slo", "canary"],
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(app:http_requests:rate5m, app)",
+        "refresh": 2,
+        "current": { "text": "orders", "value": "orders" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Availability (30d) vs SLO 99.9%",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "1 - avg_over_time(app:http_error_ratio:rate5m{app=\"$app\",track=\"stable\"}[30d])" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "decimals": 3,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0.999 }] }
+        }
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Error budget remaining (30d)",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "1 - (avg_over_time(app:http_error_ratio:rate5m{app=\"$app\",track=\"stable\"}[30d]) / 0.001)" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.25 }, { "color": "green", "value": 0.5 }] }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "RPS",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(app:http_requests:rate5m{app=\"$app\"})" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "stat",
+      "title": "p99 latency (stable)",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "app:http_latency_p99:5m{app=\"$app\",track=\"stable\"}" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.3 }] }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Error ratio: stable vs canary",
+      "description": "The canary analysis job in CI compares exactly these two series.",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "app:http_error_ratio:rate5m{app=\"$app\"}", "legendFormat": "{{track}}" }],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit" },
+        "overrides": [{ "matcher": { "id": "byName", "options": "canary" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "p99 latency: stable vs canary",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "app:http_latency_p99:5m{app=\"$app\"}", "legendFormat": "{{track}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by route and code",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (route, code) (rate(http_requests_total{app=\"$app\",route=~\"[A-Z]+ /api/.*\"}[1m]))", "legendFormat": "{{route}} {{code}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Business: orders/min and revenue",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(rate(orders_created_total[5m])) * 60", "legendFormat": "orders/min" },
+        { "expr": "sum(rate(orders_revenue_rub_total[5m])) * 60", "legendFormat": "revenue ₽/min" }
+      ]
+    }
+  ]
+}

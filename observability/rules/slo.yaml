@@ -1,0 +1,90 @@
+# SLO: 99.9% of API requests succeed (non-5xx) over 30 days.
+# Error budget = 0.1% => ~43 minutes of full outage per month.
+# Error series are OR-ed with zero so the ratio is 0 (not absent) when there are no errors.
+# Multi-window, multi-burn-rate alerts (Google SRE Workbook, ch. 5):
+#   page   — budget burns 14.4x (2% of monthly budget in 1h)  or 6x (5% in 6h)
+#   ticket — budget burns 1x over 3 days
+groups:
+  - name: slo-recording
+    interval: 30s
+    rules:
+      - record: app:http_requests:rate5m
+        expr: sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[5m]))
+      - record: app:http_errors:rate5m
+        expr: (sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*",code=~"5.."}[5m]))
+            or 0 * sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[5m])))
+      - record: app:http_error_ratio:rate5m
+        expr: app:http_errors:rate5m / app:http_requests:rate5m
+
+      - record: app:http_error_ratio:rate30m
+        expr: |
+          (sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*",code=~"5.."}[30m]))
+            or 0 * sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[30m])))
+          / sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[30m]))
+      - record: app:http_error_ratio:rate1h
+        expr: |
+          (sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*",code=~"5.."}[1h]))
+            or 0 * sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[1h])))
+          / sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[1h]))
+      - record: app:http_error_ratio:rate6h
+        expr: |
+          (sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*",code=~"5.."}[6h]))
+            or 0 * sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[6h])))
+          / sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[6h]))
+      - record: app:http_error_ratio:rate3d
+        expr: |
+          (sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*",code=~"5.."}[3d]))
+            or 0 * sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[3d])))
+          / sum by (app, track) (rate(http_requests_total{route=~"[A-Z]+ /api/.*"}[3d]))
+
+      - record: app:http_latency_p99:5m
+        expr: histogram_quantile(0.99, sum by (app, track, le) (rate(http_request_duration_seconds_bucket{route=~"[A-Z]+ /api/.*"}[5m])))
+
+  - name: slo-alerts
+    rules:
+      - alert: ErrorBudgetBurnFast
+        expr: |
+          app:http_error_ratio:rate1h{track="stable"} > (14.4 * 0.001)
+          and app:http_error_ratio:rate5m{track="stable"} > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.app }}: error budget burning 14.4x — 2% of monthly budget per hour"
+          runbook_url: https://github.com/GiitEnjoyer/shop-platform/blob/main/docs/runbooks/slo-burn.md
+
+      - alert: ErrorBudgetBurnMedium
+        expr: |
+          app:http_error_ratio:rate6h{track="stable"} > (6 * 0.001)
+          and app:http_error_ratio:rate30m{track="stable"} > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.app }}: error budget burning 6x — 5% of monthly budget in 6h"
+          runbook_url: https://github.com/GiitEnjoyer/shop-platform/blob/main/docs/runbooks/slo-burn.md
+
+      - alert: ErrorBudgetBurnSlow
+        expr: app:http_error_ratio:rate3d{track="stable"} > 0.001
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.app }}: error budget is being consumed faster than it accrues (3d window)"
+
+      - alert: LatencySLOBreach
+        expr: app:http_latency_p99:5m{track="stable"} > 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.app }}: p99 latency {{ $value | humanizeDuration }} exceeds 300ms SLO"
+
+      - alert: OrderEventsNotPublished
+        expr: increase(orders_event_publish_errors_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "orders: order.created events fail to publish — downstream (payments, email) will miss orders"
+          runbook_url: https://github.com/GiitEnjoyer/shop-platform/blob/main/docs/runbooks/slo-burn.md

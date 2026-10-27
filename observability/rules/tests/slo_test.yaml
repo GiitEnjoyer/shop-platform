@@ -1,0 +1,63 @@
+# promtool test rules observability/rules/tests/slo_test.yaml
+rule_files:
+  - ../slo.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - name: 2% errors on stable pages on-call (burn 20x > 14.4x)
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{app="orders",track="stable",route="POST /api/v1/orders",code="201"}'
+        values: "0+98x200"
+      - series: 'http_requests_total{app="orders",track="stable",route="POST /api/v1/orders",code="500"}'
+        values: "0+2x200"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              app: orders
+              track: stable
+            exp_annotations:
+              summary: "orders: error budget burning 14.4x — 2% of monthly budget per hour"
+              runbook_url: https://github.com/GiitEnjoyer/shop-platform/blob/main/docs/runbooks/slo-burn.md
+
+  - name: 0.5% errors does not page (burn 5x)
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{app="orders",track="stable",route="POST /api/v1/orders",code="201"}'
+        values: "0+199x200"
+      - series: 'http_requests_total{app="orders",track="stable",route="POST /api/v1/orders",code="500"}'
+        values: "0+1x200"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: canary errors never page on-call (canary analysis handles them)
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{app="orders",track="canary",route="POST /api/v1/orders",code="500"}'
+        values: "0+50x200"
+      - series: 'http_requests_total{app="orders",track="canary",route="POST /api/v1/orders",code="201"}'
+        values: "0+50x200"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: probes and metrics endpoints are excluded from SLI
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{app="catalog",track="stable",route="GET /readyz",code="503"}'
+        values: "0+100x200"
+      - series: 'http_requests_total{app="catalog",track="stable",route="GET /api/v1/products",code="200"}'
+        values: "0+100x200"
+    promql_expr_test:
+      - expr: app:http_error_ratio:rate5m{app="catalog"}
+        eval_time: 30m
+        exp_samples:
+          - labels: 'app:http_error_ratio:rate5m{app="catalog",track="stable"}'
+            value: 0
