@@ -1,0 +1,113 @@
+# Local stack: services + PostgreSQL + RabbitMQ + Prometheus + Grafana.
+#   make up        -> http://localhost:8080 (catalog), :8081 (orders)
+#                     Grafana http://localhost:3000 (admin/admin), Prometheus :9090
+#   make loadtest  -> k6 against the stack, watch the SLO dashboard
+name: shop
+
+x-service: &service
+  restart: unless-stopped
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  environment: &env
+    LOG_LEVEL: info
+    DRAIN_DELAY: 2s
+  deploy:
+    resources:
+      limits:
+        cpus: "1"
+        memory: 256M
+
+services:
+  catalog:
+    <<: *service
+    image: shop/catalog:local
+    build:
+      context: ../..
+      args:
+        SERVICE: catalog
+        VERSION: local
+    ports: ["8080:8080"]
+    environment:
+      <<: *env
+      CATALOG_FILE: /data/catalog.json
+
+  orders-migrate:
+    <<: *service
+    image: shop/orders:local
+    build:
+      context: ../..
+      args:
+        SERVICE: orders
+        VERSION: local
+    restart: "no"
+    command: ["-migrate"]
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  orders:
+    <<: *service
+    image: shop/orders:local
+    ports: ["8081:8080"]
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+      AMQP_URL: amqp://shop:shop@rabbitmq:5672/
+      FAULT_RATE: ${FAULT_RATE:-0}     # make canary-demo
+    depends_on:
+      orders-migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+      POSTGRES_DB: orders
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders"]
+      interval: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: shop
+      RABBITMQ_DEFAULT_PASS: shop
+    ports: ["15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../observability/rules:/etc/prometheus/rules:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../observability/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:

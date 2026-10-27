@@ -1,0 +1,9 @@
+.git
+.github
+.gitlab-ci.yml
+deploy/helm
+deploy/compose
+docs
+loadtest
+*.md
+!deploy/data
