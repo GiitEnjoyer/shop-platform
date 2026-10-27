@@ -1,0 +1,34 @@
+ingress:
+  host: shop.example.com
+
+replicaCount: 6
+autoscaling:
+  minReplicas: 6
+  maxReplicas: 40
+
+resources:
+  requests:
+    cpu: 300m
+    memory: 192Mi
+  limits:
+    memory: 384Mi
+
+vault:
+  enabled: true
+  role: shop-orders
+  secrets:
+    database-url:
+      path: kv/data/postgres/prod-pg/orders
+      template: |
+        {{- with secret "kv/data/postgres/prod-pg/orders" -}}
+        postgres://{{ .Data.data.username }}:{{ .Data.data.password }}@{{ .Data.data.host }}:{{ .Data.data.port }}/{{ .Data.data.database }}?sslmode=verify-full
+        {{- end }}
+    amqp-url:
+      path: kv/data/rabbitmq/prod/orders
+      template: |
+        {{- with secret "kv/data/rabbitmq/prod/orders" -}}
+        amqps://{{ .Data.data.username }}:{{ .Data.data.password }}@{{ .Data.data.host }}:5671/shop
+        {{- end }}
+
+nodeSelector:
+  role: apps

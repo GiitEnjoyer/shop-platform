@@ -1,0 +1,60 @@
+{{- $name := include "ms.name" . -}}
+# Main Service: stable pods (canary mode) or the active color (blue-green mode).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ms.labels" . | nindent 4 }}
+    track: stable
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ms.selector" . | nindent 4 }}
+    track: stable
+    {{- if .Values.blueGreen.enabled }}
+    color: {{ .Values.blueGreen.activeColor }}
+    {{- end }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+{{- if .Values.canary.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-canary
+  labels:
+    {{- include "ms.labels" . | nindent 4 }}
+    track: canary
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ms.selector" . | nindent 4 }}
+    track: canary
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+{{- end }}
+{{- if .Values.blueGreen.enabled }}
+---
+# Preview Service: the idle color, used for smoke tests before switching traffic.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-preview
+  labels:
+    {{- include "ms.labels" . | nindent 4 }}
+    track: preview
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ms.selector" . | nindent 4 }}
+    color: {{ ternary "green" "blue" (eq .Values.blueGreen.activeColor "blue") }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+{{- end }}

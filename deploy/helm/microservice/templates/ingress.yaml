@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled }}
+{{- $name := include "ms.name" . -}}
+{{- $ing := .Values.ingress -}}
+{{- $variants := list (dict "suffix" "" "canary" false) -}}
+{{- if .Values.canary.enabled }}
+{{- $variants = append $variants (dict "suffix" "-canary" "canary" true) -}}
+{{- end }}
+{{- range $v := $variants }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}{{ $v.suffix }}
+  labels:
+    {{- include "ms.labels" $ | nindent 4 }}
+  annotations:
+    {{- with $ing.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $v.canary }}
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: {{ $.Values.canary.weight | quote }}
+    nginx.ingress.kubernetes.io/canary-by-header: {{ $.Values.canary.headerName | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ $ing.className }}
+  {{- if and $ing.tls (not $v.canary) }}
+  tls:
+    - hosts: [{{ $ing.host | quote }}]
+      secretName: {{ $name }}-tls
+  {{- end }}
+  rules:
+    - host: {{ $ing.host | quote }}
+      http:
+        paths:
+          - path: {{ $ing.path }}
+            pathType: {{ $ing.pathType }}
+            backend:
+              service:
+                name: {{ $name }}{{ $v.suffix }}
+                port:
+                  name: http
+{{- end }}
+{{- end }}

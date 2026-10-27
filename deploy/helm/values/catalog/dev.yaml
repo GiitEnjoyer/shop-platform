@@ -1,0 +1,18 @@
+ingress:
+  host: dev.shop.example.com
+
+replicaCount: 1
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 3
+podDisruptionBudget:
+  enabled: false
+topologySpread:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 48Mi
+  limits:
+    memory: 128Mi

@@ -1,0 +1,74 @@
+{{- if .Values.migration.enabled }}
+{{- $tag := .Values.image.tag -}}
+{{- if .Values.blueGreen.enabled }}
+{{- /* new release goes to the idle color */ -}}
+{{- $tag = (index .Values.blueGreen (ternary "blue" "green" (eq .Values.blueGreen.activeColor "green"))).tag -}}
+{{- end }}
+{{- if .Values.canary.enabled }}
+{{- $tag = .Values.canary.tag -}}
+{{- end }}
+# Runs before every install/upgrade. Migrations must be backward compatible
+# (expand/contract): old pods keep serving while the schema changes.
+# Hooks run before regular release objects exist, so the Job gets its own
+# hook-managed ServiceAccount (the Vault role must list both SA names).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "ms.name" . }}-migrate
+  labels:
+    {{- include "ms.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ms.name" . }}-migrate
+  labels:
+    {{- include "ms.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "ms.selector" . | nindent 8 }}
+        track: migration
+      annotations:
+        {{- include "ms.vaultAnnotations" . | nindent 8 }}
+        {{- if .Values.vault.enabled }}
+        vault.hashicorp.com/agent-pre-populate-only: "true"
+        {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "ms.name" . }}-migrate
+      automountServiceAccountToken: {{ .Values.vault.enabled }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ $tag }}"
+          args:
+            {{- toYaml .Values.migration.args | nindent 12 }}
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+{{- end }}

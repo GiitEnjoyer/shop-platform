@@ -1,0 +1,14 @@
+{{ include "ms.name" . }} deployed to {{ .Release.Namespace }}.
+{{- if .Values.canary.enabled }}
+
+CANARY: {{ .Values.canary.tag }} receives {{ .Values.canary.weight }}% of traffic
+(force it with header "{{ .Values.canary.headerName }}: always").
+Compare stable vs canary:
+  app:http_error_ratio:rate5m{app="{{ include "ms.name" . }}"}
+{{- end }}
+{{- if .Values.blueGreen.enabled }}
+
+BLUE-GREEN: active color = {{ .Values.blueGreen.activeColor }}
+Smoke-test the idle color via Service {{ include "ms.name" . }}-preview, then switch:
+  helm upgrade ... --reuse-values --set blueGreen.activeColor={{ ternary "green" "blue" (eq .Values.blueGreen.activeColor "blue") }}
+{{- end }}

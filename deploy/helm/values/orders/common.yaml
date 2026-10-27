@@ -1,0 +1,18 @@
+nameOverride: orders
+
+image:
+  repository: cr.yandex/REGISTRY_ID/shop/orders
+
+ingress:
+  path: /api/v1/orders
+
+env:
+  DATABASE_URL_FILE: /vault/secrets/database-url
+  AMQP_URL_FILE: /vault/secrets/amqp-url
+  LOG_LEVEL: info
+
+migration:
+  enabled: true
+
+networkPolicy:
+  allowFromApps: [api-gateway]

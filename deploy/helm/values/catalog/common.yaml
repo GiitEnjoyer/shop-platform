@@ -1,0 +1,17 @@
+# catalog is released with Blue-Green: it is stateless and read-only, so running
+# two full colors for a few minutes is cheap and the switch is instant and atomic.
+nameOverride: catalog
+
+image:
+  repository: cr.yandex/REGISTRY_ID/shop/catalog
+
+ingress:
+  path: /api/v1/products
+
+blueGreen:
+  enabled: true
+  activeColor: blue
+  idleReplicas: 0
+
+env:
+  CATALOG_FILE: /data/catalog.json

@@ -1,0 +1,152 @@
+# Defaults are production-safe; per-service/per-env overrides live in deploy/helm/values/.
+
+nameOverride: ""
+
+image:
+  repository: cr.yandex/REGISTRY_ID/shop/app
+  tag: ""                       # set by CI: --set image.tag=$CI_COMMIT_SHORT_SHA
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+containerPort: 8080
+
+# Extra container args (e.g. none for API, ["-migrate"] is used by the hook Job)
+args: []
+
+env: {}
+#  LOG_LEVEL: info
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi             # no CPU limit: avoids CFS throttling latency spikes
+
+probes:
+  liveness:
+    path: /healthz
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    periodSeconds: 5
+    failureThreshold: 2
+  startup:
+    path: /healthz
+    periodSeconds: 2
+    failureThreshold: 30
+
+# Must exceed the app's DRAIN_DELAY + shutdown timeout.
+terminationGracePeriodSeconds: 40
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 30
+  targetCPUUtilizationPercentage: 65
+  # Scale up fast, scale down slowly: avoids flapping under bursty traffic.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 20
+          periodSeconds: 60
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+topologySpread:
+  enabled: true                 # spread replicas across availability zones
+
+nodeSelector: {}
+tolerations: []
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: shop.example.com
+  path: /
+  pathType: Prefix
+  tls: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+
+# --- Progressive delivery -----------------------------------------------------
+# Canary: a second Deployment (track=canary) + Service + Ingress with
+# nginx.ingress.kubernetes.io/canary-weight. CI raises the weight step by step
+# and promotes (image.tag = canary.tag, canary.enabled=false) or aborts.
+canary:
+  enabled: false
+  tag: ""
+  replicas: 1
+  weight: 10
+  # Testers can force the canary with header `X-Canary: always`
+  headerName: X-Canary
+  env: {}
+
+# Blue-Green: two full Deployments; the main Service points to activeColor,
+# <name>-preview points to the other one. Switch = helm upgrade --set blueGreen.activeColor=green
+blueGreen:
+  enabled: false
+  activeColor: blue
+  blue:
+    tag: ""
+  green:
+    tag: ""
+  # Replica counts are set explicitly by scripts/blue-green.sh from the live
+  # Deployment, so switching colors never drops capacity below what HPA reached.
+  activeReplicas: null          # defaults to replicaCount
+  idleReplicas: 0               # 0 after scale-down; = active count while warm
+
+# --- Secrets (Vault Agent Injector) -------------------------------------------
+vault:
+  enabled: false
+  role: ""                      # Vault Kubernetes-auth role
+  # Each key becomes /vault/secrets/<key>; point the app at it with <VAR>_FILE.
+  # Full example: deploy/helm/values/orders/prod.yaml
+  secrets: {}
+
+# --- DB migrations as a Helm hook ---------------------------------------------
+migration:
+  enabled: false
+  args: ["-migrate"]
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+
+# --- Observability --------------------------------------------------------------
+serviceMonitor:
+  enabled: true
+  interval: 15s
+
+# Allowed ingress sources besides ingress-nginx and monitoring.
+networkPolicy:
+  enabled: true
+  allowFromNamespaces: []
+  allowFromApps: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]

@@ -1,0 +1,40 @@
+ingress:
+  host: dev.shop.example.com
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+
+replicaCount: 1
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 3
+podDisruptionBudget:
+  enabled: false
+topologySpread:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+vault:
+  enabled: true
+  role: shop-orders
+  secrets:
+    database-url:
+      path: kv/data/postgres/dev-pg/orders
+      template: |
+        {{- with secret "kv/data/postgres/dev-pg/orders" -}}
+        postgres://{{ .Data.data.username }}:{{ .Data.data.password }}@{{ .Data.data.host }}:{{ .Data.data.port }}/{{ .Data.data.database }}?sslmode=require
+        {{- end }}
+    amqp-url:
+      path: kv/data/rabbitmq/dev/orders
+      template: |
+        {{- with secret "kv/data/rabbitmq/dev/orders" -}}
+        amqp://{{ .Data.data.username }}:{{ .Data.data.password }}@{{ .Data.data.host }}:5672/shop
+        {{- end }}
+
+env:
+  LOG_LEVEL: debug

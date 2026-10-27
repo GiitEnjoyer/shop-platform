@@ -1,0 +1,133 @@
+{{- $name := include "ms.name" . -}}
+{{- range $variant := include "ms.variants" . | fromJsonArray }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}{{ $variant.suffix }}
+  labels:
+    {{- include "ms.labels" $ | nindent 4 }}
+    track: {{ $variant.track }}
+    {{- with $variant.color }}
+    color: {{ . }}
+    {{- end }}
+spec:
+  {{- if or (not $variant.hpa) $.Values.blueGreen.enabled }}
+  replicas: {{ $variant.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "ms.selector" $ | nindent 6 }}
+      track: {{ $variant.track }}
+      {{- with $variant.color }}
+      color: {{ . }}
+      {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "ms.selector" $ | nindent 8 }}
+        app.kubernetes.io/version: {{ $variant.tag | quote }}
+        track: {{ $variant.track }}
+        {{- with $variant.color }}
+        color: {{ . }}
+        {{- end }}
+      annotations:
+        {{- include "ms.vaultAnnotations" $ | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: {{ $.Values.vault.enabled }}
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      {{- if $.Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "ms.selector" $ | nindent 14 }}
+              track: {{ $variant.track }}
+              {{- with $variant.color }}
+              color: {{ . }}
+              {{- end }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "ms.selector" $ | nindent 14 }}
+              track: {{ $variant.track }}
+              {{- with $variant.color }}
+              color: {{ . }}
+              {{- end }}
+      {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: app
+          image: "{{ $.Values.image.repository }}:{{ $variant.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          {{- with $.Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $.Values.containerPort }}
+              protocol: TCP
+          env:
+            - name: LISTEN_ADDR
+              value: ":{{ $.Values.containerPort }}"
+            - name: TRACK
+              value: {{ $variant.track | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- range $k, $v := merge (dict) $variant.env $.Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ $.Values.probes.startup.path }}
+              port: http
+            periodSeconds: {{ $.Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ $.Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ $.Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ $.Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}
