@@ -1,0 +1,293 @@
+# Delivery pipeline for shop microservices.
+#
+#   MR:    lint -> test -> build -> scan                       (no deploys)
+#   main:  ... -> deploy dev (auto) -> prod release (manual start):
+#            orders  : Canary 10% -> analysis -> 50% -> analysis -> promote  (auto-rollback on failure)
+#            catalog : Blue-Green deploy idle color -> smoke -> switch (manual) -> scale-down after 30 min
+#
+# Required CI/CD variables (masked/protected):
+#   YC_REGISTRY_ID, YC_SA_KEY_JSON          container registry push
+#   KUBECONFIG_DEV, KUBECONFIG_PROD (file)  scoped to the gitlab-deployer ServiceAccount
+#   PROM_URL_PROD, PROM_BEARER_TOKEN        canary analysis queries
+
+stages: [lint, test, build, scan, deploy-dev, release, promote, cleanup]
+
+variables:
+  GO_VERSION: "1.24"
+  REGISTRY: cr.yandex/${YC_REGISTRY_ID}/shop
+  TAG: ${CI_COMMIT_SHORT_SHA}
+  HELM_IMAGE: alpine/k8s:1.30.6        # helm + kubectl + jq + curl
+  NAMESPACE: shop
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+default:
+  interruptible: true
+
+# ============================================================ lint & test
+go:lint:
+  stage: lint
+  image: golangci/golangci-lint:v1.61.0-alpine
+  script:
+    - golangci-lint run --timeout 5m ./...
+
+go:test:
+  stage: test
+  image: golang:${GO_VERSION}
+  variables:
+    GOFLAGS: -mod=readonly
+  cache:
+    key: go-${GO_VERSION}-${CI_COMMIT_REF_SLUG}
+    paths: [.go/pkg/mod/]
+  before_script:
+    - export GOPATH=$CI_PROJECT_DIR/.go
+  script:
+    - go vet ./...
+    - go test -race -coverprofile=coverage.out -covermode=atomic ./...
+    - go tool cover -func=coverage.out | tail -1
+    - go run github.com/boumenot/gocover-cobertura@v1.3.0 < coverage.out > coverage.xml
+  coverage: '/total:\s+\(statements\)\s+(\d+.\d+)%/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+helm:lint:
+  stage: lint
+  image: ${HELM_IMAGE}
+  script:
+    - helm lint deploy/helm/microservice -f deploy/helm/values/orders/common.yaml -f deploy/helm/values/orders/prod.yaml --set image.tag=ci
+    - helm lint deploy/helm/microservice -f deploy/helm/values/catalog/common.yaml -f deploy/helm/values/catalog/prod.yaml --set blueGreen.blue.tag=ci
+    # Render every mode and validate against Kubernetes + CRD schemas
+    - |
+      for args in \
+        "-f deploy/helm/values/orders/common.yaml -f deploy/helm/values/orders/prod.yaml --set image.tag=a" \
+        "-f deploy/helm/values/orders/common.yaml -f deploy/helm/values/orders/prod.yaml --set image.tag=a --set canary.enabled=true --set canary.tag=b" \
+        "-f deploy/helm/values/catalog/common.yaml -f deploy/helm/values/catalog/prod.yaml --set blueGreen.blue.tag=a --set blueGreen.green.tag=b"; do
+        helm template t deploy/helm/microservice $args | kubeconform -strict -summary \
+          -schema-location default \
+          -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+      done
+
+rules:test:
+  stage: lint
+  image:
+    name: prom/prometheus:v2.54.1
+    entrypoint: [""]
+  script:
+    - promtool check rules observability/rules/*.yaml
+    - cd observability/rules/tests && promtool test rules *.yaml
+
+scripts:test:
+  stage: lint
+  image: python:3.12-slim
+  before_script:
+    - apt-get update -qq && apt-get install -yqq curl jq shellcheck >/dev/null
+    - pip install -q pytest
+  script:
+    - shellcheck scripts/*.sh
+    - python -m pytest scripts/ -q
+
+# ============================================================ build & scan
+build:
+  stage: build
+  image:
+    name: moby/buildkit:v0.16.0-rootless
+    entrypoint: [""]
+  parallel:
+    matrix:
+      - SERVICE: [catalog, orders]
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  before_script:
+    - mkdir -p ~/.docker
+    - echo "{\"auths\":{\"cr.yandex\":{\"auth\":\"$(printf 'json_key:%s' "$YC_SA_KEY_JSON" | base64 | tr -d '\n')\"}}}" > ~/.docker/config.json
+  script:
+    - >
+      buildctl-daemonless.sh build
+      --frontend dockerfile.v0 --local context=. --local dockerfile=.
+      --opt build-arg:SERVICE=${SERVICE} --opt build-arg:VERSION=${TAG}
+      --import-cache type=registry,ref=${REGISTRY}/${SERVICE}:buildcache
+      --export-cache type=registry,ref=${REGISTRY}/${SERVICE}:buildcache,mode=max
+      --output type=image,name=${REGISTRY}/${SERVICE}:${TAG},push=true
+
+scan:
+  stage: scan
+  image:
+    name: aquasec/trivy:0.56.2
+    entrypoint: [""]
+  parallel:
+    matrix:
+      - SERVICE: [catalog, orders]
+  variables:
+    TRIVY_USERNAME: json_key
+    TRIVY_PASSWORD: ${YC_SA_KEY_JSON}
+  script:
+    - trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --no-progress ${REGISTRY}/${SERVICE}:${TAG}
+
+# ============================================================ deploy templates
+.kube:
+  image: ${HELM_IMAGE}
+  interruptible: false
+  before_script:
+    - export KUBECONFIG="${KUBECONFIG_FILE}"
+    - kubectl version --client=true -o yaml | grep gitVersion
+    # before_script and script run in one shell, so the function is visible below.
+    - |
+      helm_orders() {
+        helm upgrade --install orders deploy/helm/microservice -n "${NAMESPACE}" \
+          -f deploy/helm/values/orders/common.yaml -f "deploy/helm/values/orders/${ENV}.yaml" \
+          --set image.repository="${REGISTRY}/orders" \
+          --wait --timeout 10m --atomic "$@"
+      }
+
+# ============================================================ dev
+deploy:dev:orders:
+  extends: .kube
+  stage: deploy-dev
+  variables: { ENV: dev, KUBECONFIG_FILE: $KUBECONFIG_DEV }
+  environment: { name: dev, url: https://dev.shop.example.com }
+  resource_group: dev-orders
+  script:
+    - helm_orders --set image.tag=${TAG}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy:dev:catalog:
+  extends: .kube
+  stage: deploy-dev
+  variables: { ENV: dev, KUBECONFIG_FILE: $KUBECONFIG_DEV, IDLE_REPLICAS: "1" }
+  environment: { name: dev, url: https://dev.shop.example.com }
+  resource_group: dev-catalog
+  script:
+    - ./scripts/blue-green.sh deploy catalog ${TAG}
+    - ./scripts/blue-green.sh smoke catalog
+    - ./scripts/blue-green.sh switch catalog
+    - ./scripts/blue-green.sh scale-down catalog
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ============================================================ prod: orders canary
+.prod:
+  extends: .kube
+  variables: { ENV: prod, KUBECONFIG_FILE: $KUBECONFIG_PROD, PROM_URL: $PROM_URL_PROD }
+  environment: { name: prod, url: https://shop.example.com }
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+canary:start:
+  extends: .prod
+  stage: release
+  resource_group: prod-orders
+  script:
+    - STABLE_TAG=$(helm -n ${NAMESPACE} get values orders -a -o json 2>/dev/null | jq -r '.image.tag // empty')
+    - STABLE_TAG=${STABLE_TAG:-$TAG}   # first release: nothing to compare against
+    - echo "stable=${STABLE_TAG} canary=${TAG}"
+    - helm_orders --set image.tag=${STABLE_TAG} --set canary.enabled=true --set canary.tag=${TAG} --set canary.weight=10 --set canary.replicas=2
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual            # release manager presses "play"
+      allow_failure: false
+
+canary:analyze:10:
+  extends: .prod
+  stage: release
+  needs: [canary:start]
+  variables: { APP: orders, ANALYSIS_DURATION: "300" }
+  script:
+    - ./scripts/canary-analysis.sh
+
+canary:weight:50:
+  extends: .prod
+  stage: release
+  needs: [canary:analyze:10]
+  resource_group: prod-orders
+  script:
+    - helm upgrade orders deploy/helm/microservice -n ${NAMESPACE} --reuse-values --set canary.weight=50 --set canary.replicas=4 --wait
+
+canary:analyze:50:
+  extends: .prod
+  stage: release
+  needs: [canary:weight:50]
+  variables: { APP: orders, ANALYSIS_DURATION: "600" }
+  script:
+    - ./scripts/canary-analysis.sh
+
+canary:promote:
+  extends: .prod
+  stage: promote
+  needs: [canary:analyze:50]
+  resource_group: prod-orders
+  script:
+    # Stable Deployment rolls to the new tag (maxUnavailable=0), then canary is removed.
+    - helm upgrade orders deploy/helm/microservice -n ${NAMESPACE} --reuse-values --set image.tag=${TAG} --set canary.enabled=false --wait --timeout 15m
+
+canary:rollback:
+  extends: .prod
+  stage: promote
+  needs:
+    - job: canary:analyze:10
+      artifacts: false
+    - job: canary:analyze:50
+      optional: true
+      artifacts: false
+  resource_group: prod-orders
+  script:
+    - helm upgrade orders deploy/helm/microservice -n ${NAMESPACE} --reuse-values --set canary.enabled=false --set canary.weight=0 --wait
+    - echo "Canary ${TAG} rejected and removed; stable untouched."
+    - exit 1                  # keep the pipeline red
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_failure
+
+# ============================================================ prod: catalog blue-green
+bluegreen:deploy:
+  extends: .prod
+  stage: release
+  resource_group: prod-catalog
+  script:
+    - ./scripts/blue-green.sh deploy catalog ${TAG}
+    - ./scripts/blue-green.sh smoke catalog
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: false
+
+bluegreen:switch:
+  extends: .prod
+  stage: promote
+  needs: [bluegreen:deploy]
+  resource_group: prod-catalog
+  script:
+    - ./scripts/blue-green.sh switch catalog
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+bluegreen:rollback:
+  extends: .prod
+  stage: promote
+  needs: [bluegreen:switch]
+  resource_group: prod-catalog
+  script:
+    - ./scripts/blue-green.sh rollback catalog
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+bluegreen:scale-down:
+  extends: .prod
+  stage: cleanup
+  needs: [bluegreen:switch]
+  resource_group: prod-catalog
+  script:
+    - ./scripts/blue-green.sh scale-down catalog
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: delayed
+      start_in: 30 minutes    # bake time: old color stays warm for instant rollback
