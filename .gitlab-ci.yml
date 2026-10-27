@@ -13,7 +13,7 @@
 stages: [lint, test, build, scan, deploy-dev, release, promote, cleanup]
 
 variables:
-  GO_VERSION: "1.24"
+  GO_VERSION: "1.26"
   REGISTRY: cr.yandex/${YC_REGISTRY_ID}/shop
   TAG: ${CI_COMMIT_SHORT_SHA}
   HELM_IMAGE: alpine/k8s:1.30.6        # helm + kubectl + jq + curl

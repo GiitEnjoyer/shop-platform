@@ -2,7 +2,7 @@
 # One Dockerfile for every service: docker build --build-arg SERVICE=orders .
 # Result: ~15 MB distroless image, non-root, no shell, read-only rootfs friendly.
 
-ARG GO_VERSION=1.24
+ARG GO_VERSION=1.26
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
