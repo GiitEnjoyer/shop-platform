@@ -1,0 +1,32 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - gosec
+    - bodyclose
+    - noctx
+    - errorlint
+    - revive
+    - misspell
+    - gofmt
+    - goimports
+
+linters-settings:
+  gosec:
+    excludes:
+      - G404   # math/rand is fine for fault injection sampling
+  revive:
+    rules:
+      - name: exported
+        disabled: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters: [gosec, noctx, bodyclose]
