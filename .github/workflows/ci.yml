@@ -27,7 +27,7 @@ jobs:
       - run: go tool cover -func=coverage.out | tail -1
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.61.0
+          version: v1.64.8
 
   helm:
     runs-on: ubuntu-latest
@@ -85,7 +85,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: shop/${{ matrix.service }}:ci
           severity: CRITICAL,HIGH
